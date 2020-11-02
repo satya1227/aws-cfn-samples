@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "A Sample template to th Nested stacks creating VPC/Subnets and Proxy Server with cfn-init "
+Parameters:
+  PubPrivateVPCClassB:
+    Description: 'Class B of VPC (172.XXX.0.0/16)'
+    Type: Number
+    Default: 50
+    ConstraintDescription: 'Must be in the range [0-255]'
+    MinValue: 0
+    MaxValue: 255
+  KeyPairName:
+    Description: "The key pair name to use to connect to the EC2 instances."
+    Type: "String"                 #AWS::SSM::Parameter::Value<String>     
+    Default: MyEC2KeyPair                       
+  S3BucketName:
+    Description: Name of your Amazon ECS Cluster
+    Type: String
+    ConstraintDescription: must be a valid Amazon ECS Cluster.
+    Default: msp-ec2-keypair
+  ECSClusterName:
+    Description: Name of your Amazon ECS Cluster
+    Type: String
+    ConstraintDescription: must be a valid Amazon ECS Cluster.
+    Default: default
+Resources:
+  LambdaKeypairStack:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      Parameters:
+        EC2KeyPair: !Ref 'KeyPairName' 
+        S3BucketName: !Ref 'S3BucketName' 
+      TemplateURL: "https://ecs-cluster-with-lt-ec2-lambda.s3.amazonaws.com/lambda-ec2-keypair-stack.yaml"
+  NWChildStack:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      Parameters:
+        PubPrivateVPCClassB: !Ref 'PubPrivateVPCClassB' 
+      TemplateURL: "https://ecs-cluster-with-lt-ec2-lambda.s3.amazonaws.com/ecs-proxy-vpc-stack.yaml"
+  ProxyChildStack:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      Parameters:
+        VPC: !GetAtt "NWChildStack.Outputs.PubPrivateVPC"    #!Sub '172.${PubPrivateVPCClassB}.0.0/16' 
+        Subnet1: !GetAtt "NWChildStack.Outputs.PublicSubnet1"
+        Subnet2: !GetAtt "NWChildStack.Outputs.PublicSubnet2"
+        Subnet3: !GetAtt "NWChildStack.Outputs.PublicSubnet3"
+        KeyPair: !Ref KeyPairName
+      TemplateURL: "https://ecs-cluster-with-lt-ec2-lambda.s3.amazonaws.com/web-proxy-ec2-nlb.yaml"
+
+  ECSClusterChildStack:
+    Type: 'AWS::CloudFormation::Stack'
+    Properties:
+      Parameters:
+        ClusterName: !Ref ECSClusterName
+        KeyName: !Ref KeyPairName
+        VPC: !GetAtt "NWChildStack.Outputs.PubPrivateVPC"    #!Ref 'PubPrivateVPCClassB'   
+        VpcCidr: !Sub '172.${PubPrivateVPCClassB}.0.0/16'
+        Subnet1: !GetAtt "NWChildStack.Outputs.PublicSubnet1"
+        Subnet2: !GetAtt "NWChildStack.Outputs.PublicSubnet2"
+        Subnet3: !GetAtt "NWChildStack.Outputs.PublicSubnet3" 
+        IsoSubnet1: !GetAtt "NWChildStack.Outputs.IsolatedSubnet1"
+        IsoSubnet2: !GetAtt "NWChildStack.Outputs.IsolatedSubnet2"
+        IsoSubnet3: !GetAtt "NWChildStack.Outputs.IsolatedSubnet3"
+        HttpProxyUrl: !Join  
+            - ':'
+            - - !GetAtt "ProxyChildStack.Outputs.StackURL"
+              - "3128"
+              
+      TemplateURL: "https://ecs-cluster-with-lt-ec2-lambda.s3.amazonaws.com/ecs-service-task-alb.yaml" 
+
+Outputs: 
+    PrivateSubnet1:
+        Description: "Private Subnet 1"
+        Value: !GetAtt "NWChildStack.Outputs.PrivateSubnet1"
+    PrivateSubnet2:
+        Description: "Private Subnet 3"
+        Value: !GetAtt "NWChildStack.Outputs.PrivateSubnet2"
+    PrivateSubnet3:
+        Description: "Private Subnet 3"
+        Value: !GetAtt "NWChildStack.Outputs.PrivateSubnet3"
+    PublicSubnet1:
+        Description: "Public Subnet 1"
+        Value: !GetAtt "NWChildStack.Outputs.PublicSubnet1"
+    PublicSubnet2:
+        Description: "Public Subnet 1"
+        Value: !GetAtt "NWChildStack.Outputs.PublicSubnet2"
+    PublicSubnet3:
+        Description: "Public Subnet 2"
+        Value: !GetAtt "NWChildStack.Outputs.PublicSubnet3"
+    ProxyStackURL:
+        Description: " Proxy Load balancer url"
+        Value: !GetAtt "ProxyChildStack.Outputs.StackURL"

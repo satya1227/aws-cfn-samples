@@ -1,0 +1,322 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Stack with LaunchTemplates to create ALB/NLB and EC2 instances
+Parameters:
+  ClusterName:
+    Description: Name of your Amazon ECS Cluster
+    Type: String
+    ConstraintDescription: must be a valid Amazon ECS Cluster.
+    Default: default
+  VPC:
+    Description: The VPC for the EC2 instances.
+    Type: 'AWS::EC2::VPC::Id'
+  VpcCidr:
+    Description: ' The IP address range that can be used to connect ECS EC2 instances'
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 172.40.0.0/16
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  Subnet1:
+    Description: The subnet1 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet2:
+    Description: The subnet2 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet3:
+    Description: The subnet3 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  KeyName:
+    Description: The key pair name to use to connect to the EC2 instances.
+    Type: String
+    Default: AWSKeyPair-NOVA
+  LatestAMIImageId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+  HttpProxyUrl:
+    Description: HTTP Proxy Url for connecting to outside network
+    Type: String
+    Default: default
+  IsoSubnet1:
+    Description: The subnet1 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  IsoSubnet2:
+    Description: The subnet2 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  IsoSubnet3:
+    Description: The subnet3 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+         
+
+Resources:
+
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Ref ClusterName
+   
+  ECSLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ECSLoadBalancerSecurityGroup 
+      GroupDescription: Security group for load balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  ECSLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+        - !Ref Subnet3
+      SecurityGroups:
+        - !Ref ECSLoadBalancerSecurityGroup
+    DependsOn:
+      - ECSLoadBalancerSecurityGroup
+  
+  ECSLoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ECSLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ECSTargetGroup
+
+  ECSTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: 'ECSTargetGroup' 
+      Port: 80
+      TargetType: instance
+      Protocol: HTTP
+      VpcId: !Ref VPC   #vpc-832ddffe
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '120'
+
+
+  ECSIamInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ECSQuickstartRole
+
+  ECSQuickstartRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ECSQuickstart
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'ecs:*'
+                Resource: '*'
+
+  ECSLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: 'ECSLaunchTemplate'
+      LaunchTemplateData:
+        EbsOptimized: 'false'
+        ImageId: !Ref LatestAMIImageId
+        InstanceType: t2.small
+        KeyName: !Ref KeyName
+        IamInstanceProfile: 
+           Arn: !GetAtt ECSIamInstanceProfile.Arn 
+        Monitoring:
+          Enabled: 'true'
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+                - !Ref ECSQuickstartSecurityGroup
+        TagSpecifications:
+        - ResourceType: instance
+          Tags: 
+           - Key: "Name"
+             Value: "ECSInstance"  
+        UserData:
+            Fn::Base64:
+                !Sub |
+                #!/bin/bash -xe
+                # Set yum proxy settings  
+                cp /etc/yum.conf /etc/yum.conf.orig  
+
+                export HTTP_PROXY=${HttpProxyUrl} 
+                export HTTPS_PROXY=$HTTP_PROXY
+                echo proxy=http://$HTTP_PROXY >> /etc/yum.conf 
+
+                yum update -y 
+                yum install -y docker
+                amazon-linux-extras install ecs -y 
+                yum update -y aws-cfn-bootstrap
+
+                # Set ECS cluster   
+                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
+                echo HTTP_PROXY=$HTTP_PROXY >> /etc/ecs/ecs.config
+                echo NO_PROXY=169.254.169.254,169.254.170.2,/var/run/docker.sock  >> /etc/ecs/ecs.config
+                echo ECS_ENABLE_TASK_IAM_ROLE=true >> /etc/ecs/ecs.config
+                echo ECS_AVAILABLE_LOGGING_DRIVERS=[awslogs]  >> /etc/ecs/ecs.config
+                cp /etc/sysconfig/docker /etc/sysconfig/docker.orig  
+                echo export HTTP_PROXY=http://$HTTP_PROXY >> /etc/sysconfig/docker
+                mkdir -p /etc/systemd/system/docker.service.d  /etc/systemd/system/ecs.service.d 
+                touch /etc/systemd/system/docker.service.d/http-proxy.conf ; 
+                touch /etc/systemd/system/ecs.service.d/http-proxy.conf ; 
+
+                echo "[Service]"  > /etc/systemd/system/docker.service.d/http-proxy.conf  
+                echo Environment="HTTP_PROXY=http://$HTTP_PROXY" >> /etc/systemd/system/docker.service.d/http-proxy.conf
+                echo Environment="HTTPS_PROXY=http://$HTTP_PROXY" >> /etc/systemd/system/docker.service.d/http-proxy.conf  
+                echo Environment="NO_PROXY=169.254.169.254,169.254.170.2,/var/run/docker.sock" >> /etc/systemd/system/docker.service.d/http-proxy.conf
+
+                echo "[Service]"  > /etc/systemd/system/ecs.service.d/http-proxy.conf  
+                echo Environment=HTTP_PROXY=http://$HTTP_PROXY >> /etc/systemd/system/ecs.service.d/http-proxy.conf 
+                echo Environment="NO_PROXY=169.254.169.254,169.254.170.2,/var/run/docker.sock" >> /etc/systemd/system/ecs.service.d/http-proxy.conf 
+
+                echo export NO_PROXY=169.254.169.254,169.254.170.2,/var/run/docker.sock  >> /etc/sysconfig/docker
+                # Start Docker & ECS service 
+                systemctl daemon-reload;
+                service docker start ; 
+                systemctl enable --now --no-block ecs.service 
+                systemctl show --property=Environment docker
+     
+
+  ECSAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+        PauseTime: PT5M
+        WaitOnResourceSignals: 'false'
+    CreationPolicy:
+      ResourceSignal:
+        Count: '0'
+        Timeout: PT10M
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref IsoSubnet1
+        - !Ref IsoSubnet2
+        - !Ref IsoSubnet3
+      Cooldown: '30'
+      DesiredCapacity: '2'
+      HealthCheckGracePeriod: '30'
+      HealthCheckType: EC2 
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt 
+          - ECSLaunchTemplate
+          - LatestVersionNumber
+      MaxSize: '2'
+      MinSize: '1'
+      TargetGroupARNs:
+        - !Ref ECSTargetGroup
+    DependsOn:
+      - ECSTargetGroup
+      - ECSLaunchTemplate
+
+  ECSQuickstartSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join 
+        - '-'
+        - - !Ref 'AWS::StackName'
+          - ECSQuickstartSecurityGroup
+      GroupDescription: !Join 
+        - ''
+        - - 'Enables ssh and proxy web access for '
+          - !Ref 'AWS::StackName'
+          - .
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref VpcCidr
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: !Ref VpcCidr
+        - IpProtocol: tcp
+          FromPort: '0'
+          ToPort: '65535'          
+          CidrIp: !Ref VpcCidr
+
+  ECSIamInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ECSQuickstartRole
+  ECSQuickstartRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ECSQuickstart
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'ecs:*'
+                Resource: '*'
+  ECStaskDef:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      RequiresCompatibilities:
+        - EC2
+      ContainerDefinitions:
+        - Name: ecsnginx
+          Image: 'nginx:latest'
+          Memory: 256
+          Cpu: 256
+          Essential: true
+          PortMappings:
+            - hostPort: 0
+              containerPort: 80
+              protocol: tcp
+      NetworkMode: bridge
+      Family: nginx
+
+  ECSService:
+    Type: 'AWS::ECS::Service'
+    DependsOn: 
+        - ECSLoadBalancerListener
+        - ECSTargetGroup
+        - ECSLaunchTemplate
+    Properties:
+      Cluster: !Ref ClusterName
+      DesiredCount: 2
+      TaskDefinition: !Ref ECStaskDef
+      LoadBalancers:
+        - TargetGroupArn: !Ref ECSTargetGroup
+          ContainerPort: 80
+          ContainerName: ecsnginx
+

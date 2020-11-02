@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Stack with LaunchTemplates to create ALB/NLB and EC2 instances
+Parameters:
+  VPC:
+    Description: The VPC for the EC2 instances.
+    Type: 'AWS::EC2::VPC::Id'
+  Subnet1:
+    Description: The subnet1 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet2:
+    Description: The subnet2 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  Subnet3:
+    Description: The subnet3 for the EC2 instances.
+    Type: 'AWS::EC2::Subnet::Id'
+  KeyPair:
+    Description: The key pair name to use to connect to the EC2 instances.
+    Type: String
+    Default: AWSKeyPair-NOVA
+  LatestAMIImageId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+Resources:
+  ProxyNetworkLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Name: My-Launch-Proxy-NLB
+      Scheme: internal
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+        - !Ref Subnet3
+      Type: network
+      Tags:
+        - Key: Name
+          Value: !Join 
+            - '-'
+            - - !Ref 'AWS::StackName'
+              - Proxy-internal-NLB
+  ProxyNetworkLoadBalancerTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: My-Launch-proxy-nlb-target
+      Port: 3128
+      TargetType: instance
+      Protocol: TCP
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Join 
+            - '-'
+            - - !Ref 'AWS::StackName'
+              - proxy-networklb-target
+    DependsOn:
+      - ProxyNetworkLoadBalancer
+      - WebLaunchTemplate
+      - WebAutoScalingGroup
+
+  ProxyNetworkLoadBalancerListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ProxyNetworkLoadBalancerTargetGroup
+      LoadBalancerArn: !Ref ProxyNetworkLoadBalancer
+      Port: '3128'
+      Protocol: TCP
+    DependsOn:
+      - WebLaunchTemplate
+      - WebAutoScalingGroup
+      - ProxyNetworkLoadBalancerTargetGroup
+
+  LoadBalancer:
+    Type: 'AWS::ElasticLoadBalancing::LoadBalancer'
+    Properties:
+      Subnets:
+        - !Ref Subnet1
+        - !Ref Subnet2
+        - !Ref Subnet3
+      SecurityGroups:
+        - !Ref PublicWebSecurityGroup
+      Listeners:
+        - LoadBalancerPort: 80
+          InstancePort: 80
+          Protocol: HTTP
+        - LoadBalancerPort: 3128
+          InstancePort: 3128
+          Protocol: TCP
+      HealthCheck:
+        Target: 'HTTP:80/'
+        HealthyThreshold: '3'
+        UnhealthyThreshold: '5'
+        Interval: '10'
+        Timeout: '3'
+  WebTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      Name: WebTargetGroup
+      Port: 8120
+      Protocol: TCP
+      VpcId: !Ref VPC   #vpc-832ddffe
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPort: 80
+      HealthCheckProtocol: TCP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '120'
+  WebLaunchTemplate:
+    Type: 'AWS::EC2::LaunchTemplate'
+    Properties:
+      LaunchTemplateName: WebLaunchTemplate
+      LaunchTemplateData:
+        EbsOptimized: 'false'
+        ImageId: !Ref LatestAMIImageId
+        InstanceType: t2.micro
+        KeyName: !Ref KeyPair
+        Monitoring:
+          Enabled: 'true'
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+                - !Ref PublicWebSecurityGroup
+                - !Ref SSHSecurityGroup
+        TagSpecifications:
+        - ResourceType: instance
+          Tags: 
+           - Key: "Name"
+             Value: "WebInstance"   
+
+        UserData:
+            Fn::Base64:
+                !Sub |
+                #!/bin/bash -xe
+                yum update -y aws-cfn-bootstrap
+                /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebLaunchTemplate --configsets Install --region ${AWS::Region}
+                /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebLaunchTemplate  --region ${AWS::Region}
+    Metadata:
+      'AWS::CloudFormation::Init':
+        configSets:
+            Install:
+                - Install
+        Install:
+            packages:
+                yum:
+                    httpd: []
+                    squid: []
+            files:
+                /var/www/html/index.html:
+                    content: !Join 
+                    - ''
+                    - - '<html> <body> Welcome to Web Server </body></html>'
+                    mode: '0600'
+                    owner: apache
+                    group: apache
+                /tmp/config-squid.sh:
+                    content: 
+                        !Sub |
+                        #!/bin/bash -xe
+                        cp /etc/squid/squid.conf /etc/squid/squid.conf.orig
+                        sed -i 's%http_access deny all%http_access allow all%g' /etc/squid/squid.conf  
+                    mode: '0700'
+                    owner: root
+                    group: root
+            commands:
+                configure_squid:
+                    command: /tmp/config-squid.sh
+                    cwd: /etc/squid
+                conf_index:
+                    command: echo "$(curl -s http://169.254.169.254/latest/meta-data/instance-id)" >> /var/www/html/index.html 
+            services:
+                sysvinit:
+                    httpd:
+                        enabled: 'true'
+                        ensureRunning: 'true'
+                    squid:
+                        enabled: 'true'
+                        ensureRunning: 'true'
+  WebAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+        PauseTime: PT5M
+        WaitOnResourceSignals: 'false'
+    CreationPolicy:
+      ResourceSignal:
+        Count: '0'
+        Timeout: PT10M
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref Subnet1
+        - !Ref Subnet2
+        - !Ref Subnet3
+      Cooldown: '30'
+      DesiredCapacity: '2'
+      HealthCheckGracePeriod: '30'
+      HealthCheckType: EC2
+      LoadBalancerNames: 
+        - !Ref LoadBalancer
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebLaunchTemplate
+        Version: !GetAtt 
+          - WebLaunchTemplate
+          - LatestVersionNumber
+      MaxSize: '2'
+      MinSize: '1'
+      TargetGroupARNs:
+        - !Ref WebTargetGroup
+    DependsOn:
+      - WebTargetGroup
+      - WebLaunchTemplate
+  SSHSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join 
+        - '-'
+        - - !Ref 'AWS::StackName'
+          - ssh-access-sg
+      GroupDescription: !Join 
+        - ''
+        - - 'Enables SSH access for '
+          - !Ref 'AWS::StackName'
+          - .
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join 
+            - '-'
+            - - !Ref 'AWS::StackName'
+              - ssh-access-sg
+  PublicWebSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join 
+        - '-'
+        - - !Ref 'AWS::StackName'
+          - public-web-sg
+      GroupDescription: !Join 
+        - ''
+        - - 'Enables public web access for '
+          - !Ref 'AWS::StackName'
+          - .
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '3128'
+          ToPort: '3128'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Join 
+            - '-'
+            - - !Ref 'AWS::StackName'
+              - public-web-sg
+  PrivateWebSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupName: !Join 
+        - '-'
+        - - !Ref 'AWS::StackName'
+          - private-web-sg
+      GroupDescription: !Join 
+        - ''
+        - - 'Enables private web access for '
+          - !Ref 'AWS::StackName'
+          - .
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          SourceSecurityGroupId: !Ref PublicWebSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Join 
+            - '-'
+            - - !Ref 'AWS::StackName'
+              - private-web-sg
+
+ 
+Outputs:
+  StackURL:
+    Description: The stack web URL.
+    Value: !GetAtt 
+      - ProxyNetworkLoadBalancer
+      - DNSName
+
+

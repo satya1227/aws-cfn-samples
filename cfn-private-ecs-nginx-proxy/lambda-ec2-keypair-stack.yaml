@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  EC2KeyPair:
+    Description: Name of the EC2 keypair
+    Type: String
+    ConstraintDescription: must be a valid Amazon ECS Cluster.
+    Default: MyEc2Keypair
+  S3BucketName:
+    Description: S3 Bucket to store Keys
+    Type: String
+    ConstraintDescription: Must be valid bucket name with access.
+    Default: msp-ec2-keypair 
+Resources:
+  LambdaEC2KeyPair:
+    Type: "Custom::LambdaKeypair"
+    Properties:
+      ServiceToken: 
+        Fn::Join:
+              - ":"
+              - - arn
+                - aws
+                - lambda
+                - Ref: AWS::Region
+                - Ref: AWS::AccountId
+                - function
+                - crhelper-ec2-keypair
+      KeypairName: !Ref EC2KeyPair
+      S3BucketName: !Ref S3BucketName  
+Outputs:
+  EC2KeyPairName:
+    Value: !GetAtt LambdaEC2KeyPair.EC2KeyPairName
+  OutputMsg:  
+    Value: !GetAtt LambdaEC2KeyPair.OutputMessage
