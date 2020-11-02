@@ -13,10 +13,10 @@ Parameters:
     Type: "String"                 #AWS::SSM::Parameter::Value<String>     
     Default: MyEC2KeyPair                       
   S3BucketName:
-    Description: Name of your Amazon ECS Cluster
+    Description: Name of your S3 bucket to store your EC2 private keys.
     Type: String
-    ConstraintDescription: must be a valid Amazon ECS Cluster.
-    Default: msp-ec2-keypair
+    ConstraintDescription: must be a valid S3 bucket name to store your EC2 keys.
+    Default: my-bucket-with-keypair 
   ECSClusterName:
     Description: Name of your Amazon ECS Cluster
     Type: String

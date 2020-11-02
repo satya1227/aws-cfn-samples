@@ -3,13 +3,13 @@ Parameters:
   EC2KeyPair:
     Description: Name of the EC2 keypair
     Type: String
-    ConstraintDescription: must be a valid Amazon ECS Cluster.
+    ConstraintDescription: Must be a valid keypair name.
     Default: MyEc2Keypair
   S3BucketName:
     Description: S3 Bucket to store Keys
     Type: String
     ConstraintDescription: Must be valid bucket name with access.
-    Default: msp-ec2-keypair 
+    Default: my-bucket-with-keypair 
 Resources:
   LambdaEC2KeyPair:
     Type: "Custom::LambdaKeypair"
