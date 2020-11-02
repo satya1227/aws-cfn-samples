@@ -3,7 +3,7 @@ AWS Cloudformation template to create
  - keys are stored in S3 bucket in your account
  - KeyPair is used to launch the instances using Launch templates
  - A VPC 
- - 3 subnets for Public, private and Isolated.(each with 3 subnets)
+ - 3 seperate zones for Public, private and Isolated.(each with 3 subnets)
  - A LaunchTemplate to launch WEB servers (httpd on port 80) and SQUID Proxy (running on 3128 port) on PUBLIC Subnet
  - An ALB to expose the Web Servers HTTP port 80
  - A NLB to direct traffic to proxy server installedo n port 3128
